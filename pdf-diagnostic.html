@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF Diagnostic</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1117; color: #e8eaf0; font-family: 'Courier New', monospace; font-size: 12px; padding: 20px; }
+  h1 { font-family: sans-serif; font-size: 16px; margin-bottom: 16px; color: #6c8fff; }
+  .drop-zone { border: 2px dashed #2a2f42; border-radius: 12px; padding: 32px; text-align: center; cursor: pointer; margin-bottom: 20px; background: #181c27; }
+  .drop-zone:hover { border-color: #6c8fff; }
+  #output { background: #181c27; border: 1px solid #2a2f42; border-radius: 8px; padding: 16px; white-space: pre-wrap; overflow-x: auto; max-height: 80vh; overflow-y: auto; }
+  .page-header { color: #ffb347; font-weight: bold; margin: 12px 0 4px; font-size: 13px; }
+  .item { display: flex; gap: 12px; margin: 2px 0; }
+  .x { color: #555c75; min-width: 60px; }
+  .y { color: #555c75; min-width: 60px; }
+  .text { color: #e8eaf0; }
+  .controls { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  button { background: #6c8fff; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 12px; }
+  button.secondary { background: #1f2436; color: #8b90a7; border: 1px solid #2a2f42; }
+  input[type=number] { background: #1f2436; border: 1px solid #2a2f42; color: #e8eaf0; border-radius: 6px; padding: 6px 10px; width: 80px; font-size: 12px; }
+  label { color: #8b90a7; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .stat { color: #4ecca3; }
+  #status { color: #ffb347; margin-bottom: 12px; font-family: sans-serif; }
+</style>
+</head>
+<body>
+<h1>PDF.js Diagnostic Tool — Raw Text Extraction</h1>
+
+<div class="drop-zone" onclick="document.getElementById('pdf-input').click()" ondragover="event.preventDefault()" ondrop="event.preventDefault();handleFile(event.dataTransfer.files[0])">
+  Drop your Amex PDF here or tap to choose
+</div>
+<input type="file" id="pdf-input" accept=".pdf" style="display:none" onchange="handleFile(this.files[0])">
+
+<div id="status"></div>
+
+<div class="controls" id="controls" style="display:none">
+  <label>Page: <input type="number" id="page-num" value="2" min="1"> of <span id="total-pages">?</span></label>
+  <button onclick="showPage()">Show Page</button>
+  <button onclick="showAllPages()">Show All Pages</button>
+  <button class="secondary" onclick="showGrouped()">Show Grouped Lines</button>
+  <button class="secondary" onclick="copyOutput()">Copy Output</button>
+  <label>Max X (page width): <span id="max-x" class="stat">?</span></label>
+</div>
+
+<div id="output">Upload a PDF to see raw extraction data...</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+let pdfDoc = null;
+let allItems = []; // { page, text, x, y }
+
+async function handleFile(file) {
+  if(!file || file.type !== 'application/pdf') return;
+  document.getElementById('status').textContent = 'Loading PDF...';
+  document.getElementById('controls').style.display = 'none';
+  allItems = [];
+
+  const buf = await file.arrayBuffer();
+  pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+  const numPages = pdfDoc.numPages;
+
+  document.getElementById('total-pages').textContent = numPages;
+  document.getElementById('status').textContent = `Extracting text from ${numPages} pages...`;
+
+  let maxX = 0;
+  for(let p = 1; p <= numPages; p++) {
+    const page = await pdfDoc.getPage(p);
+    const content = await page.getTextContent();
+    content.items.forEach(item => {
+      const x = Math.round(item.transform[4]);
+      const y = Math.round(item.transform[5]);
+      const text = item.str.trim();
+      if(text) {
+        allItems.push({ page: p, text, x, y });
+        if(x > maxX) maxX = x;
+      }
+    });
+  }
+
+  document.getElementById('max-x').textContent = maxX;
+  document.getElementById('status').textContent = `Extracted ${allItems.length} text items from ${numPages} pages. Showing page 2 by default (where transactions start).`;
+  document.getElementById('controls').style.display = 'flex';
+  showPage();
+}
+
+function showPage() {
+  const p = parseInt(document.getElementById('page-num').value) || 2;
+  const items = allItems.filter(i => i.page === p);
+  // Sort top to bottom
+  items.sort((a,b) => b.y - a.y || a.x - b.x);
+  
+  let html = `<div class="page-header">PAGE ${p} — ${items.length} text items</div>`;
+  items.forEach(item => {
+    html += `<div class="item"><span class="x">x:${item.x}</span><span class="y">y:${item.y}</span><span class="text">${escHtml(item.text)}</span></div>`;
+  });
+  document.getElementById('output').innerHTML = html;
+}
+
+function showAllPages() {
+  const sorted = [...allItems].sort((a,b) => a.page - b.page || b.y - a.y || a.x - b.x);
+  let html = '';
+  let curPage = 0;
+  sorted.forEach(item => {
+    if(item.page !== curPage) {
+      curPage = item.page;
+      html += `<div class="page-header">═══ PAGE ${curPage} ═══</div>`;
+    }
+    html += `<div class="item"><span class="x">x:${item.x}</span><span class="y">y:${item.y}</span><span class="text">${escHtml(item.text)}</span></div>`;
+  });
+  document.getElementById('output').innerHTML = html;
+}
+
+function showGrouped() {
+  const p = parseInt(document.getElementById('page-num').value) || 2;
+  const items = allItems.filter(i => i.page === p);
+  
+  // Group into lines by Y (within 4px)
+  const lines = [];
+  items.forEach(item => {
+    const existing = lines.find(l => Math.abs(l.y - item.y) <= 4);
+    if(existing) { existing.parts.push(item); existing.parts.sort((a,b) => a.x - b.x); }
+    else lines.push({ y: item.y, parts: [item] });
+  });
+  lines.sort((a,b) => b.y - a.y);
+
+  let html = `<div class="page-header">PAGE ${p} — ${lines.length} lines (grouped by Y±4px)</div>`;
+  lines.forEach(line => {
+    const lineText = line.parts.map(p => p.text).join(' | ');
+    const xs = line.parts.map(p => `${p.x}`).join(', ');
+    html += `<div class="item"><span class="y">y:${line.y}</span><span class="x" style="min-width:120px">x:[${xs}]</span><span class="text">${escHtml(lineText)}</span></div>`;
+  });
+  document.getElementById('output').innerHTML = html;
+}
+
+function copyOutput() {
+  const text = document.getElementById('output').innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    document.getElementById('status').textContent = 'Copied to clipboard!';
+    setTimeout(() => document.getElementById('status').textContent = '', 2000);
+  });
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
